@@ -4,9 +4,22 @@ import os
 from pylast import LastFMNetwork
 from dotenv import load_dotenv
 from datetime import datetime
+import hashlib, requests
+import asyncpg
+from cryptography.fernet import Fernet
+
+def generate_api_sig(params, shared_secret):
+    concatenated = ''.join(f"{key}{value}" for key, value in sorted(params.items()))
+    concatenated += shared_secret
+    return hashlib.md5(concatenated.encode()).hexdigest()
+
+def encrypt_sk(sk):
+    load_dotenv()
+    fern = Fernet(os.getenv("FERNET").encode())
+    return fern.encrypt(sk.encode()).decode()
 
 load_dotenv()
-CLIENT_ID = os.getenv("API")
+API = os.getenv("API")
 REDIRECT_URI = "http://localhost:5000/callback"
 
 lastfm_data = {}
@@ -28,7 +41,7 @@ async def fetch_recent_tracks(user, username):
     global usernames_in_progress
     usernames_in_progress.add(username)
     try:
-        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=5)
+        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=None)
         return [track_to_dict(track) for track in tracks]
     finally:
         usernames_in_progress.remove(username)
@@ -37,20 +50,43 @@ async def asyncfetch(user, username):
     if username not in usernames_in_progress:
         lastfm_data[username] = await fetch_recent_tracks(user, username)
 
+async def send_sk(username, sk):
+    pool = await asyncpg.create_pool(
+        database="lfm",
+        host="localhost",
+        password=os.getenv("PGP"),
+        port="5432"
+    )
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO SESSIONS VALUES ($1, $2)", username, encrypt_sk(sk))
+    await pool.close()
+
+
 @app.route('/')
 def index():
-    auth_url = f"https://www.last.fm/api/auth/?api_key={CLIENT_ID}"
+    auth_url = f"https://www.last.fm/api/auth/?api_key={API}"
     return redirect(auth_url)
 
 @app.route('/callback')
 async def callback():
     load_dotenv()
+    API = os.getenv("API")
+    LFS = os.getenv("LFS")
     access_token = request.args.get('token')
-    print("ACCESS TOKEN:", access_token)
-    network = LastFMNetwork(api_key=CLIENT_ID, api_secret=os.getenv("LFS"), token=access_token)
-    user = network.get_authenticated_user()
-    username = user.get_name()
-    await asyncfetch(user, username)
+    params = {
+        "api_key": API,
+        "method": "auth.getSession",
+        "token": access_token
+    }
+    api_sig = generate_api_sig(params, LFS)
+    r = requests.get(f"https://ws.audioscrobbler.com/2.0/?method=auth.getSession&api_key={API}&token={access_token}&api_sig={api_sig}&format=json")
+    session = r.json()["session"]
+    sk = session["key"]
+    username = session["name"]
+    # network = LastFMNetwork(api_key=API, api_secret=LFS, session_key=sk)
+    # user = network.get_authenticated_user()
+    await send_sk(username, sk)
+    # await asyncfetch(user, username)
     return render_template("index.html")
 
 @app.route('/status', methods=['GET'])
