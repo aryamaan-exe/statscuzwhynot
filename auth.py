@@ -1,12 +1,13 @@
 from flask import Flask, request, redirect, url_for, render_template, jsonify
-import asyncio
+import asyncio, aiohttp
 import os
-from pylast import LastFMNetwork
+from pylast import LastFMNetwork, PyLastError
 from dotenv import load_dotenv
 from datetime import datetime
 import hashlib, requests
 import asyncpg
 from cryptography.fernet import Fernet
+import traceback
 
 def generate_api_sig(params, shared_secret):
     concatenated = ''.join(f"{key}{value}" for key, value in sorted(params.items()))
@@ -41,10 +42,19 @@ async def fetch_recent_tracks(user, username):
     global usernames_in_progress
     usernames_in_progress.add(username)
     try:
-        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=None)
+        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=1)
+        print("After fetching tracks:", tracks)
+        if not tracks:
+            print(f"No tracks found for {username}.")
+            return []
         return [track_to_dict(track) for track in tracks]
+    except Exception as e:
+        print(f"Error fetching tracks for {username}: {e}")
+        print(traceback.format_exc())
+        return []
     finally:
         usernames_in_progress.remove(username)
+
 
 async def asyncfetch(user, username):
     if username not in usernames_in_progress:
@@ -61,6 +71,11 @@ async def send_sk(username, sk):
         await conn.execute("INSERT INTO SESSIONS VALUES ($1, $2)", username, encrypt_sk(sk))
     await pool.close()
 
+async def fetch_session_data(api_key, token, api_sig):
+    async with aiohttp.ClientSession() as session:
+        url = f"https://ws.audioscrobbler.com/2.0/?method=auth.getSession&api_key={api_key}&token={token}&api_sig={api_sig}&format=json"
+        async with session.get(url) as response:
+            return await response.json()
 
 @app.route('/')
 def index():
@@ -79,14 +94,14 @@ async def callback():
         "token": access_token
     }
     api_sig = generate_api_sig(params, LFS)
-    r = requests.get(f"https://ws.audioscrobbler.com/2.0/?method=auth.getSession&api_key={API}&token={access_token}&api_sig={api_sig}&format=json")
-    session = r.json()["session"]
+    session_data = await fetch_session_data(API, access_token, api_sig)
+    session = session_data["session"]
     sk = session["key"]
     username = session["name"]
-    # network = LastFMNetwork(api_key=API, api_secret=LFS, session_key=sk)
-    # user = network.get_authenticated_user()
+    network = LastFMNetwork(api_key=API, api_secret=LFS, session_key=sk)
+    user = network.get_authenticated_user()
     await send_sk(username, sk)
-    # await asyncfetch(user, username)
+    await asyncfetch(user, username)
     return render_template("index.html")
 
 @app.route('/status', methods=['GET'])

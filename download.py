@@ -3,7 +3,8 @@ import os
 import requests
 from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
-
+import time
+from pylast import LastFMNetwork
 
 def e(x):
     cur.execute(x)
@@ -25,7 +26,16 @@ username = u = "aryamaan_exe"  #input("Enter username: ")
 
 
 auth = HTTPBasicAuth(u, os.getenv("LFS"))
-r = requests.get("http://localhost:5000/status", auth=auth)
+
+network = LastFMNetwork(api_key=os.getenv("API"), api_secret=os.getenv("LFS"), session_key="4UudyBaiD4P7UbxVtOOJgguoUf3mkCRA")
+
+while True:
+    start = time.perf_counter()
+    r = requests.get("http://localhost:5000/status", auth=auth)
+    if r.status_code == 200:
+        print(time.perf_counter() - start)
+        break
+    time.sleep(0.5)
 
 
 if r.status_code == 200:

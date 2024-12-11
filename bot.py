@@ -12,15 +12,23 @@ async def ping(ctx):
 
 @bot.command()
 async def connect(ctx):
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅"] and reaction.message == m
     e = discord.Embed(
         title="Hey there!",
         description="""
 Before using SCWN, you need to agree to the following:
 Your Last.fm data will be downloaded and kept in a database so you can check some cool stats.
-
-        """
+This bot is better than fmbot.
+"""
     )
-    await ctx.send(embed=e)
+    m = await ctx.send(embed=e)
+    await m.add_reaction("✅")
+    c = await bot.wait_for("reaction_add", check=check)
+    if c:
+        await ctx.author.send("Link")
+        await ctx.send("Check your DMs!")
+    
 
 load_dotenv()
 bot.run(os.getenv("BOT"))
