@@ -57,7 +57,9 @@ if r.status_code == 200:
                     track["title"],
                     track["artist"],
                     track["album"] or "Unknown",  
-                    track["played_at"]            
+                    track["played_at"],
+                    track["genre"],
+                    track["country"]
                 )
                 args_list.append(cur.mogrify("(%s, %s, %s, %s)", track_data).decode("utf-8"))
             

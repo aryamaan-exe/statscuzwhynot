@@ -12,7 +12,7 @@ async def run():
     )
     logging.debug("Connected")
     async with pool.acquire() as conn:
-        await conn.execute("CREATE TABLE SESSIONS IF NOT EXISTS (USERNAME VARCHAR(15), KEY TEXT)")
+        await conn.execute("CREATE TABLE SESSIONS IF NOT EXISTS (DISCORD VARCHAR(32), LASTFM VARCHAR(15), KEY VARCHAR(255))")
     
     await pool.close()
 

@@ -33,9 +33,11 @@ def track_to_dict(track):
     sql_timestamp = dt_object.strftime("%Y-%m-%d %H:%M:%S")
     return {
         "title": track.track.title,
-        "artist": track.track.artist.name,        
+        "artist": track.track.artist.name,    
         "album": track.album,
         "played_at": sql_timestamp,
+        "genre": track.track.genre,
+        "country": track.track.artist.country
     }
 
 async def fetch_recent_tracks(user, username):
