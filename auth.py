@@ -1,7 +1,7 @@
 from flask import Flask, request, redirect, url_for, render_template, jsonify
 import asyncio, aiohttp
 import os
-from pylast import LastFMNetwork, PyLastError
+from pylast import LastFMNetwork, SessionKeyGenerator, WSError
 from dotenv import load_dotenv
 from datetime import datetime
 import hashlib, requests
@@ -21,6 +21,7 @@ def encrypt_sk(sk):
 
 load_dotenv()
 API = os.getenv("API")
+LFS = os.getenv("LFS")
 REDIRECT_URI = "http://localhost:5000/callback"
 
 lastfm_data = {}
@@ -40,27 +41,16 @@ def track_to_dict(track):
         "country": track.track.artist.country
     }
 
-async def fetch_recent_tracks(user, username):
-    global usernames_in_progress
+async def fetch_tracks(user, username):
+    global usernames_in_progress, lastfm_data
     usernames_in_progress.add(username)
     try:
-        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=1)
-        print("After fetching tracks:", tracks)
-        if not tracks:
-            print(f"No tracks found for {username}.")
-            return []
-        return [track_to_dict(track) for track in tracks]
+        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=5)
+        lastfm_data[username] = [track_to_dict(track) for track in tracks]
     except Exception as e:
-        print(f"Error fetching tracks for {username}: {e}")
-        print(traceback.format_exc())
-        return []
+        print(e)
     finally:
-        usernames_in_progress.remove(username)
-
-
-async def asyncfetch(user, username):
-    if username not in usernames_in_progress:
-        lastfm_data[username] = await fetch_recent_tracks(user, username)
+        usernames_in_progress.discard(username)
 
 async def send_sk(username, sk):
     pool = await asyncpg.create_pool(
@@ -81,29 +71,20 @@ async def fetch_session_data(api_key, token, api_sig):
 
 @app.route('/')
 def index():
-    auth_url = f"https://www.last.fm/api/auth/?api_key={API}"
+    network = LastFMNetwork(API, LFS)
+    global skg, auth_url
+    skg = SessionKeyGenerator(network)
+    auth_url = skg.get_web_auth_url()
     return redirect(auth_url)
+
+# NOTE: change the session key logic to have different urls for each user using flask sessions
 
 @app.route('/callback')
 async def callback():
-    load_dotenv()
-    API = os.getenv("API")
-    LFS = os.getenv("LFS")
-    access_token = request.args.get('token')
-    params = {
-        "api_key": API,
-        "method": "auth.getSession",
-        "token": access_token
-    }
-    api_sig = generate_api_sig(params, LFS)
-    session_data = await fetch_session_data(API, access_token, api_sig)
-    session = session_data["session"]
-    sk = session["key"]
-    username = session["name"]
-    network = LastFMNetwork(api_key=API, api_secret=LFS, session_key=sk)
+    session_key = skg.get_web_auth_session_key(auth_url)
+    network = LastFMNetwork(API, LFS, session_key)
     user = network.get_authenticated_user()
-    await send_sk(username, sk)
-    await asyncfetch(user, username)
+    await fetch_tracks(user, user.name)
     return render_template("index.html")
 
 @app.route('/status', methods=['GET'])
