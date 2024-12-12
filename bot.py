@@ -63,5 +63,21 @@ async def country(ctx):
 
     await ctx.send(embed=e)
 
+@bot.command()
+async def genres(ctx):
+    lfm = bot.conn.fetch("SELECT LASTFM FROM SESSIONS WHERE DISCORD = $1", ctx.author)
+    genres = bot.conn.fetch(f"SELECT GENRE, COUNT(*) FROM {lfm} GROUP BY GENRE ORDER BY COUNT(*) DESC;")
+    s = ""
+    for c in genres:
+        s += c[0] + " - " + str(c[1]) + "\n"
+        # Rock - 1000
+
+    e = discord.Embed(
+        title="Genre list",
+        description=s,
+    )
+
+    await ctx.send(embed=e)
+
 load_dotenv()
 bot.run(os.getenv("BOT"))
