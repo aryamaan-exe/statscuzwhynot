@@ -1,13 +1,16 @@
-from flask import Flask, request, redirect, url_for, render_template, jsonify
+from flask import Flask, request, redirect, url_for, render_template, jsonify, session, copy_current_request_context
 import asyncio, aiohttp
 import os
 from pylast import LastFMNetwork, SessionKeyGenerator, WSError
 from dotenv import load_dotenv
 from datetime import datetime
-import hashlib, requests
+import hashlib, requests, threading
 import asyncpg
 from cryptography.fernet import Fernet
-import traceback
+import pycountry
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 def generate_api_sig(params, shared_secret):
     concatenated = ''.join(f"{key}{value}" for key, value in sorted(params.items()))
@@ -27,28 +30,63 @@ REDIRECT_URI = "http://localhost:5000/callback"
 lastfm_data = {}
 usernames_in_progress = set()
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK")
 
-def track_to_dict(track):
+async def get_country(artist):
+    url = f"https://musicbrainz.org/ws/2/artist?query={artist}&fmt=json"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as r:
+            res = (await r.json())["artists"][0]["area"]  # Possible misidentifying an artist here
+            if res["type"] == "Country":
+                return res["name"]
+            # Annoying part starts (if not country)
+            area_id = res["id"]
+            url2 = f"https://musicbrainz.org/ws/2/area/{area_id}?fmt=json"
+            async with aiohttp.ClientSession() as session2:
+                async with session2.get(url2) as r2:
+                    ccode = (await r2.json())["iso-3166-2-codes"][0][:2]  # KR-11 -> KR
+                    country = pycountry.countries.get(alpha_2=ccode)
+                    return country.common_name  # South Korea
+    
+
+async def track_to_dict(track):
     playback_date = track.playback_date
     dt_object = datetime.strptime(playback_date, "%d %b %Y, %H:%M")
     sql_timestamp = dt_object.strftime("%Y-%m-%d %H:%M:%S")
+    artist = track.track.artist.name
+    try:
+        genre = track.track.artist.get_top_tags()[0].item.name # Possible that top tag is not genre but rare
+    except:
+        genre = "Unknown"
+    country = await get_country(artist)
     return {
         "title": track.track.title,
-        "artist": track.track.artist.name,    
+        "artist": artist,
         "album": track.album,
         "played_at": sql_timestamp,
-        "genre": track.track.genre,
-        "country": track.track.artist.country
+        "genre": genre, 
+        "country": country
     }
 
 async def fetch_tracks(user, username):
+    def get_recent():
+        return user.get_recent_tracks(limit=10)
     global usernames_in_progress, lastfm_data
     usernames_in_progress.add(username)
+    logging.info("Fetching tracks")
     try:
-        tracks = await asyncio.to_thread(user.get_recent_tracks, limit=5)
-        lastfm_data[username] = [track_to_dict(track) for track in tracks]
+        tracks = await asyncio.to_thread(get_recent)
+        lastfm_data[username] = []
+        for track in tracks:
+            try:
+                track_dict = await track_to_dict(track)
+                lastfm_data[username].append(track_dict)
+            except Exception as e:
+                logging.error(f"Error processing track {track}: {e}")
+
+        logging.info("Done fetching")
     except Exception as e:
-        print(e)
+        logging.error(f"Error in fetch_tracks: {e}")
     finally:
         usernames_in_progress.discard(username)
 
@@ -69,26 +107,52 @@ async def fetch_session_data(api_key, token, api_sig):
         async with session.get(url) as response:
             return await response.json()
 
-@app.route('/')
-def index():
-    network = LastFMNetwork(API, LFS)
-    global skg, auth_url
-    skg = SessionKeyGenerator(network)
-    auth_url = skg.get_web_auth_url()
-    return redirect(auth_url)
-
-# NOTE: change the session key logic to have different urls for each user using flask sessions
-
-@app.route('/callback')
-async def callback():
-    session_key = skg.get_web_auth_session_key(auth_url)
-    network = LastFMNetwork(API, LFS, session_key)
+async def callback(skg, network):
+    while True:
+        try:
+            session_key = await asyncio.to_thread(skg.get_web_auth_session_key, session['auth_url'])
+            logging.info("Done")
+            break
+        except WSError:
+            logging.error("Oops")
+            await asyncio.sleep(1)
+    
+    
+    network.session_key = session_key
     user = network.get_authenticated_user()
-    await fetch_tracks(user, user.name)
+    try:
+        tasks = [
+            asyncio.create_task(send_sk(user.name, session_key)),
+            asyncio.create_task(fetch_tracks(user, user.name))
+        ]
+        await asyncio.gather(*tasks)
+
+    except Exception as e:
+        logging.error(f"Error in callback: {e}")
     return render_template("index.html")
 
+#------------------------------------------------------------------
+
+@app.route('/')
+async def index():
+    try:
+        network = LastFMNetwork(API, LFS, username=request.args.get("username"))
+        skg = SessionKeyGenerator(network)
+        session['auth_url'] = skg.get_web_auth_url()
+        @copy_current_request_context
+        def run_callback():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(callback(skg, network))
+            loop.close()
+        threading.Thread(target=run_callback).start()
+        return redirect(session['auth_url'])
+    except Exception as e:
+        logging.error(f"Error in index: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
 @app.route('/status', methods=['GET'])
-def status():
+async def status():
     load_dotenv()
     auth = request.authorization
     if not auth:

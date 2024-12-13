@@ -27,7 +27,7 @@ username = u = "aryamaan_exe"  #input("Enter username: ")
 
 auth = HTTPBasicAuth(u, os.getenv("LFS"))
 
-network = LastFMNetwork(api_key=os.getenv("API"), api_secret=os.getenv("LFS"), session_key="4UudyBaiD4P7UbxVtOOJgguoUf3mkCRA")
+# network = LastFMNetwork(api_key=os.getenv("API"), api_secret=os.getenv("LFS"), session_key="4UudyBaiD4P7UbxVtOOJgguoUf3mkCRA")
 
 while True:
     start = time.perf_counter()
@@ -35,6 +35,7 @@ while True:
     if r.status_code == 200:
         print(time.perf_counter() - start)
         break
+    print(r.status_code)
     time.sleep(0.5)
 
 
@@ -48,7 +49,7 @@ if r.status_code == 200:
         else:
             
             e(f"DROP TABLE IF EXISTS {u}")
-            e(f"CREATE TABLE IF NOT EXISTS {u} (TRACK TEXT, ARTIST TEXT, ALBUM TEXT, AT TIMESTAMP)")
+            e(f"CREATE TABLE IF NOT EXISTS {u} (TRACK TEXT, ARTIST TEXT, ALBUM TEXT, AT TIMESTAMP, GENRE VARCHAR(255), COUNTRY VARCHAR(255))")
             
             
             args_list = []
@@ -61,7 +62,7 @@ if r.status_code == 200:
                     track["genre"],
                     track["country"]
                 )
-                args_list.append(cur.mogrify("(%s, %s, %s, %s)", track_data).decode("utf-8"))
+                args_list.append(cur.mogrify("(%s, %s, %s, %s, %s, %s)", track_data).decode("utf-8"))
             
             args_str = ",".join(args_list)
             e(f"INSERT INTO {u} VALUES {args_str}")
