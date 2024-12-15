@@ -2,10 +2,11 @@ import discord, os
 from dotenv import load_dotenv
 from discord.ext import commands
 import asyncpg
-from pylast import LastFMNetwork, SessionKeyGenerator, WSError
-import asyncio, aiohttp, logging, pycountry, threading
+from pylast import LastFMNetwork, SessionKeyGenerator, WSError, PERIOD_1MONTH
+import asyncio, aiohttp, logging, pycountry, random
 from cryptography.fernet import Fernet
 from datetime import datetime
+import google.generativeai as genai
 
 async def get_country(artist):
     url = f"https://musicbrainz.org/ws/2/artist?query={artist}&fmt=json"
@@ -73,9 +74,15 @@ def encrypt_sk(sk):
     fern = Fernet(os.getenv("FERNET").encode())
     return fern.encrypt(sk.encode()).decode()
 
-async def send_sk(username, sk):
+def decrypt_sk(sk):
+    load_dotenv()
+    fern = Fernet(os.getenv("FERNET").encode())
+    return fern.decrypt(sk.encode()).decode()
+
+async def send_sk(username, id, sk):
     async with bot.pool.acquire() as conn:
-        await conn.execute("INSERT INTO SESSIONS VALUES ($1, $2)", username, encrypt_sk(sk))
+        await conn.execute("INSERT INTO SESSIONS VALUES ($1, $2, $3)", username, id, encrypt_sk(sk))
+        bot.sessions[id] = [username, sk]
 
 #---------------------------------------------------------------------
 
@@ -85,15 +92,22 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=",", intents=intents)
 API = os.getenv("API")
 LFS = os.getenv("LFS")
+genai.configure(api_key=os.getenv("GEM"))
+model = genai.GenerativeModel("gemini-2.0-flash-exp")
 
 @bot.event
 async def on_ready():
+    bot.sessions = {}
     bot.pool = await asyncpg.create_pool(
         database="lfm",
         host="localhost",
         password=os.getenv("PGP"),
         port="5432"
     )
+    async with bot.pool.acquire() as conn:
+        sessions = await conn.fetch("SELECT * FROM SESSIONS;")
+        for session in sessions:
+            bot.sessions[session[1]] = [session[0], session[2]] # sessions[userid] = [lastfm username, their session key]
 
 @bot.event
 async def on_disconnect():
@@ -178,9 +192,10 @@ Before using SCWN, you need to agree to the following:
     await ctx.author.send("You have been authenticated. We're fetching your tracks right now. It will take a while, but we'll message you when it's done.")
     network.session_key = session_key
     user = network.get_authenticated_user()
+
     try:
         tasks = [
-            asyncio.create_task(send_sk(user.name, session_key)),
+            asyncio.create_task(send_sk(user.name, ctx.author.id, session_key)),
             asyncio.create_task(fetch_tracks(user, ctx))
         ]
         
@@ -202,5 +217,32 @@ async def recent(ctx):
         description=s
     )
     await ctx.send(embed=e)
+
+@bot.command()
+async def roast(ctx):
+    message = await ctx.send("Generating Roast...")
+    session_data = bot.sessions[ctx.author.id]
+    user = LastFMNetwork(API, LFS, decrypt_sk(session_data[1]), session_data[0]).get_authenticated_user()
+    top_artists = random.sample(list(map(lambda x: x.item.name, user.get_top_artists(period=PERIOD_1MONTH, limit=20))), 3)
+    response = model.generate_content(f"Give me 5 paragraphs roasting the music taste of someone who likes {', '.join(top_artists)}.")
+    e = discord.Embed(
+        title="Your Roast",
+        description=response.text
+    )
+    await message.edit(content="", embed=e)
+
+@bot.command()
+async def praise(ctx):
+    message = await ctx.send("Generating Praise...")
+    session_data = bot.sessions[ctx.author.id]
+    user = LastFMNetwork(API, LFS, decrypt_sk(session_data[1]), session_data[0]).get_authenticated_user()
+    top_artists = random.sample(list(map(lambda x: x.item.name, user.get_top_artists(period=PERIOD_1MONTH, limit=20))), 3)
+    response = model.generate_content(f"Give me 5 paragraphs praising the music taste of someone who likes {', '.join(top_artists)}.")
+    e = discord.Embed(
+        title="Your Praise",
+        description=response.text
+    )
+    await message.edit(content="", embed=e)
+
 
 bot.run(os.getenv("BOT"))
