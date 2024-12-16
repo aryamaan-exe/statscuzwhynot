@@ -84,6 +84,35 @@ async def send_sk(username, id, sk):
         await conn.execute("INSERT INTO SESSIONS VALUES ($1, $2, $3)", username, id, encrypt_sk(sk))
         bot.sessions[id] = [username, sk]
 
+def authenticate(session_data):
+    return LastFMNetwork(API, LFS, decrypt_sk(session_data[1]), session_data[0]).get_authenticated_user()
+
+async def background_update(id):
+    # Fetch the last 5 tracks and add them to table, if date matches, finish, else if all 5 are new, grab 10 more
+    # Possible optimization: Is there a way to get middle 10 tracks instead of first 15? Or get by date?
+    finished = False
+    i = 5
+    while not finished:
+        session_data = bot.sessions[id]
+        user = authenticate(session_data)
+        tracks = user.get_recent_tracks(time_from=) # NOTE: fetch the latest time from u{id} db (sort by AT because it's gonna be random order now) and use that in time_from
+        async with bot.pool.acquire() as conn:
+            recent = await conn.fetchone(f"SELECT * FROM u{id}")
+            new_tracks = []
+
+            for track in tracks:
+                if track.playback_date == recent[3]:
+                    finished = True
+                else:
+                    new_tracks.append(track_to_tup(track))
+
+            await conn.copy_records_to_table("u"+str(id), records=new_tracks)
+            i += 10
+        
+            
+    
+    
+
 #---------------------------------------------------------------------
 
 load_dotenv()
@@ -114,6 +143,22 @@ async def on_disconnect():
     if bot.conn:
         await bot.pool.release(bot.conn)
     await bot.pool.close()
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    if message.content[0] != ",":
+        return
+    
+    try:
+        await background_update(message.author.id)
+    except:
+        pass # User does not have account and sends a message starting with ","
+
+    await bot.process_commands()
+
+#---------------------------------------------------------------------------
 
 @bot.command()
 async def ping(ctx):
@@ -222,7 +267,7 @@ async def recent(ctx):
 async def roast(ctx):
     message = await ctx.send("Generating Roast...")
     session_data = bot.sessions[ctx.author.id]
-    user = LastFMNetwork(API, LFS, decrypt_sk(session_data[1]), session_data[0]).get_authenticated_user()
+    user = authenticate(session_data)
     top_artists = random.sample(list(map(lambda x: x.item.name, user.get_top_artists(period=PERIOD_1MONTH, limit=20))), 3)
     response = model.generate_content(f"Give me 5 paragraphs roasting the music taste of someone who likes {', '.join(top_artists)}.")
     e = discord.Embed(
@@ -235,7 +280,7 @@ async def roast(ctx):
 async def praise(ctx):
     message = await ctx.send("Generating Praise...")
     session_data = bot.sessions[ctx.author.id]
-    user = LastFMNetwork(API, LFS, decrypt_sk(session_data[1]), session_data[0]).get_authenticated_user()
+    user = authenticate(session_data)
     top_artists = random.sample(list(map(lambda x: x.item.name, user.get_top_artists(period=PERIOD_1MONTH, limit=20))), 3)
     response = model.generate_content(f"Give me 5 paragraphs praising the music taste of someone who likes {', '.join(top_artists)}.")
     e = discord.Embed(
