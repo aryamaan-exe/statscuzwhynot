@@ -1,3 +1,8 @@
 .env
 ari.json
 test.py
+index.html
+lastfm.api.js
+lastfm.api.md5.js
+lastfm.api.cache.js
+conversation_history.json
